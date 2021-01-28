@@ -1,0 +1,29 @@
+{
+  "name": "contracts",
+  "version": "0.0.1",
+  "description": "",
+  "main": "truffle-config.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "rpc": "ganache-cli --defaultBalanceEther 100000 --port 7545 --networkId 5777 --gasLimit 99999999 --gasPrice 0x01 --mnemonic \"dust turn excite exercise space light now divert idle include bird arrow\"",
+    "migrate": "truffle migrate"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^2.5.0",
+    "@truffle/hdwallet-provider": "^1.0.30",
+    "truffle-assertions": "^0.9.2",
+    "web3": "^1.2.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pointxio/contracts.git"
+  },
+  "author": "Danil Sergeev",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/pointxio/contracts/issues"
+  },
+  "homepage": "https://github.com/pointxio/contracts#readme"
+}

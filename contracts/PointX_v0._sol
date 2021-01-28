@@ -1,0 +1,408 @@
+pragma solidity >=0.4.0 <0.7.0;
+
+import "./IERC20Extended.sol";
+
+/*
+ 1. 5 вопросов или < X 3 ответа на выбор + свой ответ
+    1-5 строк с вопросами
+    1-15 вариантов ответов.
+        Одно число в ответе – от 0 до 3 (3 значит свой ответ)
+        Одна строка в ответе – свой ответ
+
+        [[Question1, ans1, ans2, ans3], [Question2, ans1, ans2, ans3], ...]
+
+
+ 2. Оценка картинки и/или выражения 5 или < по 5-ти бальльной шкале
+    Одна строка – контент
+    Одна строка/число – тип контента (картинка или текст)
+    Одна строка – вопрос
+        Одна оценка от 1 до 5
+ 3. NPS оценка продукта или услуги на степень удовлетворенности и рекомендаций по 10-ти бальной шкале
+    Один вопрос
+        Одна оценка от 1 до 10
+        Один ответ – строка
+*/
+
+contract PointX {
+  // -------------------------- VARIABLES --------------------------
+    address public admin = address(0);
+    address public bot = address(0);
+
+    uint public tasksCount = 0;
+    mapping (uint => Task) tasks;
+
+    uint public rewardsCount = 0;
+    mapping (uint => Reward) rewards;
+
+    uint public partnersCount = 0;
+    mapping (uint => Partner) partners;
+    mapping (address => uint) public addrToPartnerNum;
+
+    uint public usersCount = 0;
+    mapping (uint => User) users;
+    mapping (address => uint) public addrToUserNum;
+
+    uint public constant COMPENSATION_AMOUNT = 1_000_000_000_000_000;
+
+    IERC20Extended public tokenX;
+  // -------------------------- MODIFIERS --------------------------
+    modifier onlyAdmin() {
+      require(msg.sender == address(admin), "Admin only");
+      _;
+    }
+
+    modifier adminOrBot() {
+      require(msg.sender == address(admin) || msg.sender == address(bot), "Admin or bot");
+      _;
+    }
+
+    modifier onlyPartner() {
+      require(addrToPartnerNum[msg.sender] != 0, "Partner only");
+      _;
+    }
+
+    modifier onlyUser() {
+      require(addrToUserNum[msg.sender] != 0, "User only");
+      _;
+    }
+  // -------------------------- STRUCT    --------------------------
+    struct Partner {
+      address addr;
+      string name;
+      string description;
+      string logo;
+    }
+
+    struct User {
+      address addr;
+      string linkKYC;
+      UserStatus status;
+    }
+
+    enum UserStatus {
+      LOCKED,
+      TASKS_UNLOCKED,
+      TASKS_AND_REWARDS_UNLOCKED
+    }
+
+    struct Task {
+      TaskType taskType;
+      string caption;
+      string description;
+      uint reward;
+      string imageLink;
+      Partner partner;
+      bool isVerified;
+      bool isActive;
+
+      uint totalAmount;
+      uint completedTasksCount;
+      bytes data;
+
+      mapping (uint => bytes) taskNumToResult;
+      mapping (uint => address) taskNumToUser;
+    }
+
+    enum TaskType {
+      QUESTIONNAIRE,
+      RANKING,
+      FREEFORM_ANSWER
+    }
+
+    struct Reward {
+      string caption;
+      string description;
+      uint price;
+      string imageLink;
+
+      Partner partner;
+      bool isVerified;
+      bool isActive;
+
+      uint totalAmount;
+      uint rewardedUsersAmount;
+      mapping (uint => address) rewardNumToUser;
+      mapping (address => bool) shouldReceive;
+      mapping (address => bool) received;
+    }
+
+  // -------------------------- MANAGE    --------------------------
+    constructor() public {
+        admin = msg.sender;
+    }
+
+    function setToken (address _tokenAddress) public onlyAdmin {
+      tokenX = IERC20Extended(_tokenAddress);
+    }
+
+    function changeAdmin (address _adminAddress) public onlyAdmin {
+      admin = _adminAddress;
+    }
+
+    function setBot (address _botAddress) public onlyAdmin {
+      bot = _botAddress;
+    }
+
+  // -------------------------- SET       --------------------------
+      function addUser (address _userAddress, string memory _linkKYC) public {
+        usersCount += 1;
+        users[usersCount] = User(_userAddress, _linkKYC, UserStatus.LOCKED);
+        addrToUserNum[_userAddress] = usersCount;
+      }
+
+      function addUserAndUnlockTasks (address payable _userAddress) public adminOrBot {
+        if (addrToUserNum[_userAddress] == 0) addUser(_userAddress, "");
+
+        users[addrToUserNum[_userAddress]].status = UserStatus.TASKS_UNLOCKED;
+        _userAddress.transfer(COMPENSATION_AMOUNT);
+      }
+
+      function unlockRewardsForUser (address payable _userAddress) public adminOrBot {
+        if (addrToUserNum[_userAddress] == 0) addUser(_userAddress, "");
+
+        users[addrToUserNum[_userAddress]].status = UserStatus.TASKS_AND_REWARDS_UNLOCKED;
+      }
+
+      function addPartner (
+        address _partnerAddress,
+        string memory _name,
+        string memory _description,
+        string memory _logo) public adminOrBot
+      {
+        partnersCount += 1;
+        partners[partnersCount] = Partner(_partnerAddress, _name, _description, _logo);
+        addrToPartnerNum[_partnerAddress] = partnersCount;
+      }
+
+      function addBalance (address _partnerAddress, uint _amount) public adminOrBot {
+        tokenX.mint(_partnerAddress, _amount);
+      }
+
+      function publishReward (
+        string memory _caption,
+        string memory _description,
+        uint _price,
+        string memory _imageLink,
+        uint _totalAmount) public onlyPartner
+      {
+        rewardsCount += 1;
+        rewards[rewardsCount] = Reward(
+          _caption, _description, _price, _imageLink,
+          partners[addrToPartnerNum[msg.sender]],
+          false, false, _totalAmount, 0
+        );
+      }
+
+      function publishTask (
+        TaskType _taskType,
+        string memory _caption,
+        string memory _description,
+        uint _reward,
+        string memory _imageLink,
+        uint _totalAmount,
+        bytes memory _data
+        ) public onlyPartner
+      {
+        require(tokenX.allowance(msg.sender, address(this)) >= _reward * _totalAmount, "Partner should have enough balance");
+        tokenX.transferFrom(msg.sender, address(this), _reward * _totalAmount); // $$$ забираем у Partner деньги на rewards за выполненные таски
+        tasksCount += 1;
+
+        tasks[tasksCount] = Task(_taskType,
+          _caption, _description, _reward, _imageLink,
+          partners[addrToPartnerNum[msg.sender]],
+          false, false, _totalAmount, 0, _data
+        );
+      }
+
+  // -------------------------- BALANCES  --------------------------
+    function getBalance (address _addr) public view returns(uint balance) {
+      return tokenX.balanceOf(_addr);
+    }
+
+    function fillContractBalance () external payable {
+      // simple payable function
+    }
+
+  // -------------------------- FINALIZE  --------------------------
+    function completeTask (uint _taskId, bytes memory _result) public onlyUser {
+      // 2. User didn't completed it yet
+
+      // user status is not locked
+      require(users[addrToUserNum[msg.sender]].status != UserStatus.LOCKED, "User should have an unlocked status");
+
+      tasks[_taskId].completedTasksCount += 1;
+      tasks[_taskId].taskNumToResult[tasks[_taskId].completedTasksCount] = _result;
+      tasks[_taskId].taskNumToUser[tasks[_taskId].completedTasksCount] = msg.sender;
+
+      tokenX.transfer(msg.sender, tasks[_taskId].reward); // $$$ User получает reward и может потратить его на rewards
+    }
+
+    function receiveReward (uint _rewardId) public onlyUser {
+      require(tokenX.allowance(msg.sender, address(this)) >= rewards[_rewardId].price, "User should have enough balance");
+      rewards[_rewardId].rewardedUsersAmount += 1;
+
+      rewards[_rewardId].rewardNumToUser[rewards[_rewardId].rewardedUsersAmount] = msg.sender;
+      rewards[_rewardId].shouldReceive[msg.sender] = true;
+      rewards[_rewardId].received[msg.sender] = false;
+
+      tokenX.burnFrom(msg.sender, rewards[_rewardId].price); // $$$ сжигаем баланс у юзера
+    }
+
+    function confirmRewardReception (uint _rewardId) public onlyPartner {
+      // TODO: this partner
+      rewards[_rewardId].received[msg.sender] = true;
+    }
+
+    function acceptTask (uint _taskId) public onlyAdmin {
+      tasks[_taskId].isVerified = true;
+    }
+
+    function acceptReward (uint _rewardId) public onlyAdmin {
+      rewards[_rewardId].isVerified = true;
+    }
+
+  // -------------------------- GET       --------------------------
+
+    function getTaskCardData (uint _taskId) public view returns(
+      TaskType taskType,
+      string memory caption,
+      uint reward,
+      string memory imageLink,
+
+      string memory partnerName,
+      uint totalAmount,
+      uint completedTasksCount)
+    {
+      return (
+        tasks[_taskId].taskType,
+        tasks[_taskId].caption,
+        tasks[_taskId].reward,
+        tasks[_taskId].imageLink,
+
+        tasks[_taskId].partner.name,
+        tasks[_taskId].totalAmount,
+        tasks[_taskId].completedTasksCount
+      );
+    }
+
+    function getTaskViewData (uint _taskId) public view returns(
+      string memory description,
+      string memory partnerDescription,
+      string memory partnerLogo,
+      address partnerAddress,
+      bool isActive,
+      bool isVerified,
+      bytes memory data)
+    {
+      return (
+        tasks[_taskId].description,
+        tasks[_taskId].partner.description,
+        tasks[_taskId].partner.logo,
+        tasks[_taskId].partner.addr,
+        tasks[_taskId].isActive,
+        tasks[_taskId].isVerified,
+        tasks[_taskId].data);
+    }
+
+    function getTaskResult (uint _taskId, uint _resId)
+      public view returns(bytes memory result, address user)
+    {
+      return (tasks[_taskId].taskNumToResult[_resId],
+              tasks[_taskId].taskNumToUser[_resId]);
+    }
+
+    function getRewardCardData (uint _rewardId) public view returns(
+      string memory caption,
+      string memory description,
+      uint reward,
+      string memory imageLink,
+      string memory partnerName,
+      uint totalAmount,
+      uint completedTasksCount)
+    {
+      return (
+      rewards[_rewardId].caption,
+      rewards[_rewardId].description,
+      rewards[_rewardId].price,
+      rewards[_rewardId].imageLink,
+      rewards[_rewardId].partner.name,
+      rewards[_rewardId].totalAmount,
+      rewards[_rewardId].rewardedUsersAmount
+      );
+    }
+
+/*    struct Reward {
+      string caption;
+      string description;
+      Partner partner;
+      bool isVerified;
+      bool isActive;
+
+      uint totalAmount;
+      uint rewardedUsersAmount;
+      mapping (uint => address) rewardNumToUser;
+      mapping (address => bool) shouldReceive;
+      mapping (address => bool) received;
+    }*/
+
+    function getRewardViewData (uint _rewardId) public view returns(
+      string memory description,
+      string memory partnerDescription,
+      string memory partnerLogo,
+      address partnerAddress,
+      bool isActive,
+      bool isVerified
+      // bytes memory data
+      )
+    {
+      return (
+        rewards[_rewardId].description,
+        rewards[_rewardId].partner.description,
+        rewards[_rewardId].partner.logo,
+        rewards[_rewardId].partner.addr,
+        rewards[_rewardId].isActive,
+        rewards[_rewardId].isVerified
+        // rewards[_rewardId].data
+      );
+    }
+
+    function getRewardResult (uint _rewardId, uint _resId) public view returns(
+      address user,
+      bool shouldReceive,
+      bool received)
+    {
+      return (
+        rewards[_rewardId].rewardNumToUser[_resId],
+        rewards[_rewardId].shouldReceive[rewards[_rewardId].rewardNumToUser[_resId]],
+        rewards[_rewardId].received[rewards[_rewardId].rewardNumToUser[_resId]]
+      );
+    }
+
+    function getUser (uint _userId) public view returns (address userAddress, string memory linkKYC, UserStatus status) {
+      return (users[_userId].addr, users[_userId].linkKYC, users[_userId].status);
+    }
+
+    function getUserStatus (address _userAddress) public view returns (UserStatus status) {
+      return users[addrToUserNum[_userAddress]].status;
+    }
+
+    function updateUser (uint _userId, address _userAddress, string memory _linkKYC) public {
+     users[_userId].addr = _userAddress;
+     users[_userId].linkKYC = _linkKYC;
+    }
+
+    function getPartner (uint _partnerId) public view returns(
+      address addr,
+      string memory name,
+      string memory description,
+      string memory logo)
+    {
+      return(
+        partners[_partnerId].addr,
+        partners[_partnerId].name,
+        partners[_partnerId].description,
+        partners[_partnerId].logo
+      );
+    }
+
+}
